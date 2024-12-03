@@ -99,29 +99,28 @@ EOF
   wget -O /etc/ak_monitor/config.json https://raw.githubusercontent.com/akile-network/akile_monitor/refs/heads/main/config.json
 
   # 提示用户修改配置
-  echo "配置文件已下载，接下来请修改以下项："
-  
-  # 修改 auth_secret
-  read -p "请输入 auth_secret (当前值为 'auth_secret'): " auth_secret
+  read -p "请输入新的 auth_secret: " auth_secret
   sed -i "s/\"auth_secret\": \"auth_secret\"/\"auth_secret\": \"$auth_secret\"/g" /etc/ak_monitor/config.json
 
-  # 修改 tg_token
-  read -p "请输入 Telegram bot token (当前值为 'your_telegram_bot_token'): " tg_token
-  sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
-
-  # 修改监听端口
-  read -p "请输入监听端口号 (当前值为 ':3000'): " listen_port
-
-  # 确保输入的是有效的端口号（只允许数字）
+  # 让用户输入端口号，去掉冒号（即输入数字部分）
+  read -p "请输入新的监听端口: " listen_port
+  # 确保用户输入的是有效的端口号
   if [[ ! "$listen_port" =~ ^[0-9]+$ ]]; then
-    echo "无效的端口号，请输入一个有效的数字端口号。"
+    echo "无效的端口号。请重新输入一个有效的数字端口号。"
     exit 1
   fi
-
   # 更新配置文件中的监听地址
   sed -i "s/\"listen\": \":3000\"/\"listen\": \":$listen_port\"/g" /etc/ak_monitor/config.json
 
+  # 修改 tg_token
+  read -p "请输入新的 Telegram bot token: " tg_token
+  sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
+
+
   echo "配置文件已更新，请检查 /etc/ak_monitor/config.json 是否符合要求。"
+  
+  # 重启服务
+  systemctl restart ak_monitor.service
 }
 
 # 启动监控面板
@@ -154,11 +153,11 @@ modify_config() {
   echo "配置文件当前路径: /etc/ak_monitor/config.json"
   
   # 提示用户修改配置
-  read -p "请输入新的 auth_secret (当前值为 'auth_secret'): " auth_secret
+  read -p "请输入新的 auth_secret: " auth_secret
   sed -i "s/\"auth_secret\": \"auth_secret\"/\"auth_secret\": \"$auth_secret\"/g" /etc/ak_monitor/config.json
 
   # 让用户输入端口号，去掉冒号（即输入数字部分）
-  read -p "请输入新的监听端口 (当前值为 ':3000'): " listen_port
+  read -p "请输入新的监听端口: " listen_port
   # 确保用户输入的是有效的端口号
   if [[ ! "$listen_port" =~ ^[0-9]+$ ]]; then
     echo "无效的端口号。请重新输入一个有效的数字端口号。"
@@ -168,7 +167,7 @@ modify_config() {
   sed -i "s/\"listen\": \":3000\"/\"listen\": \":$listen_port\"/g" /etc/ak_monitor/config.json
 
   # 修改 tg_token
-  read -p "请输入新的 Telegram bot token (当前值为 'your_telegram_bot_token'): " tg_token
+  read -p "请输入新的 Telegram bot token: " tg_token
   sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
 
   echo "配置文件已更新，正在重启监控面板..."
