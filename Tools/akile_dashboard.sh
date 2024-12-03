@@ -117,7 +117,7 @@ EOF
   sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
 
 
-  echo "配置文件已更新，请检查 /etc/ak_monitor/config.json 是否符合要求。"
+  echo "配置文件已更新，请检查 /etc/ak_monitor/config.json 是否符合要求。正在重启面板"
   
   # 重启服务
   systemctl restart ak_monitor.service
