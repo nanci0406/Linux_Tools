@@ -1,5 +1,24 @@
 #!/bin/bash
 
+# 检查并安装 jq
+install_jq() {
+  if ! command -v jq &> /dev/null; then
+    echo "jq 未安装，正在安装 jq..."
+    if [ -f /etc/debian_version ]; then
+      # Debian/Ubuntu 系统
+      apt-get update && apt-get install -y jq
+    elif [ -f /etc/redhat-release ]; then
+      # CentOS/RHEL 系统
+      yum install -y jq
+    else
+      echo "无法识别的操作系统，请手动安装 jq。"
+      exit 1
+    fi
+  else
+    echo "jq 已经安装。"
+  fi
+}
+
 # 显示菜单
 echo "请选择操作:"
 echo "1. 安装监控面板"
@@ -7,6 +26,8 @@ echo "2. 启动监控面板"
 echo "3. 重启监控面板"
 echo "4. 停止监控面板"
 echo "5. 设置监控面板开机自启"
+echo "6. 修改配置文件"
+echo "7. 卸载监控面板"
 echo "0. 退出"
 
 # 读取用户输入
@@ -14,6 +35,9 @@ read -p "请输入操作编号: " choice
 
 # 安装监控面板
 install_monitor() {
+  # 安装 jq
+  install_jq
+
   # 获取最新的版本号
   latest_version=$(curl -s https://api.github.com/repos/akile-network/akile_monitor/releases/latest | jq -r .tag_name)
 
@@ -81,10 +105,6 @@ EOF
   read -p "请输入 auth_secret (当前值为 'auth_secret'): " auth_secret
   sed -i "s/\"auth_secret\": \"auth_secret\"/\"auth_secret\": \"$auth_secret\"/g" /etc/ak_monitor/config.json
 
-  # 修改 listen
-  read -p "请输入监听地址 (当前值为 ':3000'): " listen
-  sed -i "s/\"listen\": \":3000\"/\"listen\": \"$listen\"/g" /etc/ak_monitor/config.json
-
   # 修改 tg_token
   read -p "请输入 Telegram bot token (当前值为 'your_telegram_bot_token'): " tg_token
   sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
@@ -116,6 +136,47 @@ enable_monitor() {
   echo "AkileCloud Monitor 已设置为开机自启！"
 }
 
+# 修改配置文件
+modify_config() {
+  echo "修改配置文件..."
+  echo "配置文件当前路径: /etc/ak_monitor/config.json"
+  
+  # 提示用户修改配置
+  read -p "请输入新的 auth_secret (当前值为 'auth_secret'): " auth_secret
+  sed -i "s/\"auth_secret\": \"auth_secret\"/\"auth_secret\": \"$auth_secret\"/g" /etc/ak_monitor/config.json
+
+  # 让用户输入端口号，不需要输入冒号
+  read -p "请输入新的监听端口 (当前值为 ':3000'): " listen_port
+  sed -i "s/\"listen\": \":3000\"/\"listen\": \":$listen_port\"/g" /etc/ak_monitor/config.json
+
+  # 修改 tg_token
+  read -p "请输入新的 Telegram bot token (当前值为 'your_telegram_bot_token'): " tg_token
+  sed -i "s/\"tg_token\": \"your_telegram_bot_token\"/\"tg_token\": \"$tg_token\"/g" /etc/ak_monitor/config.json
+
+  echo "配置文件已更新，正在重启监控面板..."
+
+  # 重启服务
+  systemctl restart ak_monitor.service
+}
+
+# 卸载监控面板
+uninstall_monitor() {
+  # 停止并禁用服务
+  systemctl stop ak_monitor.service
+  systemctl disable ak_monitor.service
+
+  # 删除服务文件
+  rm -f /etc/systemd/system/ak_monitor.service
+
+  # 删除程序和配置文件
+  rm -rf /etc/ak_monitor/
+
+  # 重新加载 systemd 配置
+  systemctl daemon-reload
+
+  echo "AkileCloud Monitor 已成功卸载！"
+}
+
 # 根据用户选择执行相应操作
 case $choice in
   1)
@@ -132,6 +193,12 @@ case $choice in
     ;;
   5)
     enable_monitor
+    ;;
+  6)
+    modify_config
+    ;;
+  7)
+    uninstall_monitor
     ;;
   0)
     echo "退出程序"
