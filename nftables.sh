@@ -88,6 +88,8 @@ while true; do
         nft delete rule ip nat POSTROUTING handle "$HANDLE"
       done
 
+      nft list ruleset > /etc/nftables.conf
+      
       echo "规则已删除（若存在）。"
       read -p "按 Enter 键返回菜单..."
       ;;
