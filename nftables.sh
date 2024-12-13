@@ -17,6 +17,26 @@ enable_ip_forward() {
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 }
 
+# 初始化nftables的表和链
+initialize_nftables() {
+    # 创建一个inet表，如果不存在的话
+    if ! nft list tables | grep -q 'inet'; then
+        nft add table inet filter
+        echo "创建 inet filter 表"
+    fi
+
+    # 创建链，如果不存在的话
+    if ! nft list chain inet filter prerouting | grep -q 'prerouting'; then
+        nft add chain inet filter prerouting { type nat hook prerouting priority 0 \; }
+        echo "创建 prerouting 链"
+    fi
+
+    if ! nft list chain inet filter forward | grep -q 'forward'; then
+        nft add chain inet filter forward { type filter hook forward priority 0 \; }
+        echo "创建 forward 链"
+    fi
+}
+
 # 配置nftables端口转发（同时支持TCP和UDP）
 setup_nftables_forward() {
     REMOTE_IP=$1
@@ -32,6 +52,9 @@ setup_nftables_forward() {
     fi
 
     echo "添加端口转发规则：远程IP $REMOTE_IP:$REMOTE_PORT 转发到 本地IP $LOCAL_IP:$LOCAL_PORT (同时支持TCP和UDP)"
+
+    # 初始化nftables表和链
+    initialize_nftables
 
     # 添加TCP转发规则
     nft add rule inet filter prerouting ip saddr $REMOTE_IP tcp dport $REMOTE_PORT counter dnat to $LOCAL_IP:$LOCAL_PORT
