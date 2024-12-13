@@ -33,10 +33,10 @@ while true; do
   case $choice in
     1)
       # 用户输入本地监听地址和端口、目标地址和端口
-      read -p "请输入本地监听 IP 地址 (例如 121.14.61.227): " LOCAL_IP
-      read -p "请输入本地监听端口 (例如 8881): " LOCAL_PORT
-      read -p "请输入目标 IP 地址 (例如 185.241.43.169): " TARGET_IP
-      read -p "请输入目标端口 (例如 8881): " TARGET_PORT
+      read -p "请输入本地监听IP地址: " LOCAL_IP
+      read -p "请输入本地监听端口: " LOCAL_PORT
+      read -p "请输入目标IP地址: " TARGET_IP
+      read -p "请输入目标端口: " TARGET_PORT
 
       # 设置 nftables 转发规则
       echo "配置 nftables 转发规则..."
