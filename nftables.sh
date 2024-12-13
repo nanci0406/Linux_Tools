@@ -71,7 +71,12 @@ delete_nftables_forward() {
 
 # 查看当前端口转发规则
 view_nftables_forward() {
-    nft list ruleset | grep "dport"
+    RULES=$(nft list ruleset | grep "dport")
+    if [ -z "$RULES" ]; then
+        echo "当前没有任何端口转发规则。"
+    else
+        echo "$RULES"
+    fi
 }
 
 # 主菜单循环
