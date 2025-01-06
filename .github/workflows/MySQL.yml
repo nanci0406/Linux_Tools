@@ -29,7 +29,7 @@ jobs:
               build-essential \
               cmake \
               libssl-dev \
-              libncurses5-dev \
+              libncurses-dev \
               libaio-dev \
               bison \
               zlib1g-dev \
@@ -67,6 +67,7 @@ jobs:
             # Create build directory and configure the build process
             mkdir build && cd build
             cmake .. -DWITH_SSL=system -DWITH_ZLIB=system -DDOWNLOAD_BOOST=1 -DWITH_BOOST=/workspace/boost_1_77_0
+            mkdir -p /usr/local/mysql
 
             # Compile MySQL
             make -j\$(nproc)
