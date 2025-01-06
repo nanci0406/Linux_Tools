@@ -24,17 +24,58 @@ jobs:
       - name: Build MySQL 8 in Debian 12 Docker container
         run: |
           docker run --rm -v $GITHUB_WORKSPACE:/workspace -w /workspace debian:12 bash -c "
-            apt update && apt install -y build-essential cmake libssl-dev libncurses5-dev libaio-dev bison zlib1g-dev
-            wget https://downloads.mysql.com/archives/get/p/23/file/mysql-8.0.28.tar.gz
-            tar -xvzf mysql-8.0.28.tar.gz
-            cd mysql-8.0.28
+            # Update and install essential packages
+            apt update && apt install -y \
+              build-essential \
+              cmake \
+              libssl-dev \
+              libncurses5-dev \
+              libaio-dev \
+              bison \
+              zlib1g-dev \
+              wget \
+              checkinstall \
+              libboost-all-dev \
+              libcurl4-openssl-dev \
+              libgoogle-perftools-dev \
+              libjemalloc-dev \
+              libedit-dev \
+              libxml2-dev \
+              libreadline-dev \
+              libsasl2-dev \
+              libbz2-dev \
+              liblzma-dev \
+              libjemalloc-dev \
+              gcc \
+              g++ \
+              make \
+              pkg-config \
+              git \
+              libpcre3-dev \
+              libevent-dev
+
+            # Download MySQL 8 source
+            wget https://downloads.mysql.com/archives/get/p/23/file/mysql-8.0.37.tar.gz
+
+            # Extract the source code
+            tar -xvzf mysql-8.0.37.tar.gz
+
+            # Move to MySQL source directory
+            cd mysql-8.0.37
+
+            # Create build directory and configure the build process
             mkdir build && cd build
-            cmake .. && make -j\$(nproc)
-            checkinstall -y --install=no --pkgname=mysql8 --pkgversion=8.0.28
+            cmake .. -DWITH_SSL=system -DWITH_ZLIB=system
+
+            # Compile MySQL
+            make -j\$(nproc)
+
+            # Use checkinstall to create a .deb package without installing it
+            checkinstall -y --install=no --pkgname=mysql8 --pkgversion=8.0.37
           "
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v3
         with:
           name: mysql8-deb
-          path: mysql-8.0.28/build/*.deb
+          path: mysql-8.0.37/build/*.deb
