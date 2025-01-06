@@ -18,12 +18,12 @@ jobs:
 
       - name: Set up Docker environment
         run: |
-          # Pull Debian 12 Docker image
-          docker pull debian:12
+          # Pull latest Debian 12 (Bookworm) Docker image
+          docker pull debian:bookworm
 
       - name: Build MySQL 8 in Debian 12 Docker container
         run: |
-          docker run --rm -v $GITHUB_WORKSPACE:/workspace -w /workspace debian:12 bash -c "
+          docker run --rm -v $GITHUB_WORKSPACE:/workspace -w /workspace debian:bookworm bash -c "
             # Update and install essential packages
             apt update && apt install -y \
               build-essential \
@@ -35,7 +35,6 @@ jobs:
               zlib1g-dev \
               wget \
               checkinstall \
-              libboost-all-dev \
               libcurl4-openssl-dev \
               libgoogle-perftools-dev \
               libjemalloc-dev \
@@ -52,7 +51,17 @@ jobs:
               pkg-config \
               git \
               libpcre3-dev \
-              libevent-dev
+              libevent-dev \
+              wget \
+              tar \
+              curl
+
+            # Download and install Boost 1.77.0 manually (if needed)
+            wget https://boostorg.jfrog.io/artifactory/main/release/1.77.0/source/boost_1_77_0.tar.bz2
+            tar -xjvf boost_1_77_0.tar.bz2
+            cd boost_1_77_0
+            ./bootstrap.sh
+            ./b2 install
 
             # Download MySQL 8 source
             wget https://downloads.mysql.com/archives/get/p/23/file/mysql-8.0.37.tar.gz
@@ -65,7 +74,7 @@ jobs:
 
             # Create build directory and configure the build process
             mkdir build && cd build
-            cmake .. -DWITH_SSL=system -DWITH_ZLIB=system
+            cmake .. -DWITH_SSL=system -DWITH_ZLIB=system -DWITH_BOOST=/workspace/boost_1_77_0
 
             # Compile MySQL
             make -j\$(nproc)
