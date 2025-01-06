@@ -1,0 +1,40 @@
+name: Build MySQL 8 in Docker
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker environment
+        run: |
+          # Pull Debian 12 Docker image
+          docker pull debian:12
+
+      - name: Build MySQL 8 in Debian 12 Docker container
+        run: |
+          docker run --rm -v $GITHUB_WORKSPACE:/workspace -w /workspace debian:12 bash -c "
+            apt update && apt install -y build-essential cmake libssl-dev libncurses5-dev libaio-dev bison zlib1g-dev
+            wget https://downloads.mysql.com/archives/get/p/23/file/mysql-8.0.28.tar.gz
+            tar -xvzf mysql-8.0.28.tar.gz
+            cd mysql-8.0.28
+            mkdir build && cd build
+            cmake .. && make -j\$(nproc)
+            checkinstall -y --install=no --pkgname=mysql8 --pkgversion=8.0.28
+          "
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: mysql8-deb
+          path: mysql-8.0.28/build/*.deb
