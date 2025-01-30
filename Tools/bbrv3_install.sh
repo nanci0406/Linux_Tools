@@ -67,9 +67,8 @@ get_download_links() {
 
     echo -e "\033[36m找到的最新版本：$TAG_NAME\033[0m"
     
-    # 获取所有文件的下载链接
-    DOWNLOAD_URL="https://gh.mnari.cn/https://github.com/byJoey/Actions-bbr-v3/releases/download/$TAG_NAME"
-    ASSET_URLS=$(curl -s "$BASE_URL" | grep "browser_download_url" | grep "$TAG_NAME" | awk -F '"' '{print $4}')
+    # 获取所有文件的下载链接，并在前面添加 GitHub 代理
+    ASSET_URLS=$(curl -s "$BASE_URL" | grep "browser_download_url" | grep "$TAG_NAME" | awk -F '"' '{print "https://gh.mnari.cn/" $4}')
 
     for URL in $ASSET_URLS; do
         FILE=$(basename "$URL")
