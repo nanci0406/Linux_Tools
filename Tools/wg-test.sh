@@ -73,6 +73,9 @@ setup_nat_forwarding() {
   iptables -I INPUT -p udp --dport $WG_PORT -j ACCEPT
   iptables -t nat -A PREROUTING -d "$LOCAL_IP" -j DNAT --to-destination "$WG_CLIENT_IP"
   iptables -t nat -A POSTROUTING -j MASQUERADE
+  sudo apt install iptables-persistent
+  sudo netfilter-persistent save
+  
 
   echo "[+] 已添加自定义 NAT 转发规则"
 }
