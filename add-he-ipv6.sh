@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ============================================================================
-# HE IPv6 Tunnel 一键配置脚本 for systemd-networkd v2.0
+# HE IPv6 Tunnel 一键配置脚本 for systemd-networkd v2.1
 # 使用 systemd service 创建隧道 + networkd 配置地址路由
+# 修复：正确处理原生 IPv6 的 metric 配置
 # ============================================================================
 
 # 颜色
@@ -34,6 +35,7 @@ HE_LOCAL=""
 HE_GATEWAY=""
 NATIVE_IPV6=""
 NATIVE_IPV6_IFACE=""
+NATIVE_IPV6_GW=""
 
 # ============================================================================
 # 基础检查函数
@@ -62,14 +64,10 @@ check_networkd() {
 setup_sit_module() {
     log_step "配置 sit 内核模块..."
     
-    # 创建目录
     mkdir -p /etc/modules-load.d
-    
-    # 开机自动加载
     echo "sit" > /etc/modules-load.d/sit.conf
     log_info "已配置开机自动加载 sit 模块"
     
-    # 立即加载
     if ! lsmod | grep -q "^sit "; then
         modprobe sit || {
             log_error "无法加载 sit 模块"
@@ -86,7 +84,6 @@ setup_rt_tables() {
     
     mkdir -p /etc/iproute2
     
-    # 创建 rt_tables 如果不存在
     if [[ ! -f /etc/iproute2/rt_tables ]]; then
         cat > /etc/iproute2/rt_tables << 'EOF'
 255     local
@@ -97,7 +94,6 @@ EOF
         log_info "创建 /etc/iproute2/rt_tables"
     fi
     
-    # 添加 he_tunnel 表
     if ! grep -q "^${RT_TABLE_HE}[[:space:]]" /etc/iproute2/rt_tables; then
         echo "${RT_TABLE_HE}    he_tunnel" >> /etc/iproute2/rt_tables
         log_info "添加路由表 ${RT_TABLE_HE} he_tunnel"
@@ -113,25 +109,26 @@ detect_native_ipv6() {
     
     NATIVE_IPV6=""
     NATIVE_IPV6_IFACE=""
+    NATIVE_IPV6_GW=""
     
-    # 遍历网络接口
     local ifaces
     ifaces=$(ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1)
     
     for iface in $ifaces; do
-        # 跳过特殊接口
         case "$iface" in
             lo|he*|sit*|tun*|tap*|docker*|veth*|br-*|virbr*) continue ;;
         esac
         
-        # 获取全局 IPv6 地址
         local addr
         addr=$(ip -6 addr show dev "$iface" scope global 2>/dev/null | grep -oP 'inet6 \K[^/]+' | grep -v "^fe80" | head -1)
         
         if [[ -n "$addr" ]]; then
             NATIVE_IPV6="$addr"
             NATIVE_IPV6_IFACE="$iface"
+            # 获取网关
+            NATIVE_IPV6_GW=$(ip -6 route show default dev "$iface" 2>/dev/null | awk '/via/ {print $3}' | head -1)
             log_info "检测到原生 IPv6: $NATIVE_IPV6 (接口: $NATIVE_IPV6_IFACE)"
+            [[ -n "$NATIVE_IPV6_GW" ]] && log_info "原生 IPv6 网关: $NATIVE_IPV6_GW"
             return 0
         fi
     done
@@ -141,12 +138,8 @@ detect_native_ipv6() {
 }
 
 detect_local_ipv4() {
-    # 获取出口 IPv4
     LOCAL_IPV4=$(ip -4 route get 8.8.8.8 2>/dev/null | grep -oP 'src \K[0-9.]+' | head -1)
-    
-    if [[ -z "$LOCAL_IPV4" ]]; then
-        LOCAL_IPV4=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-    fi
+    [[ -z "$LOCAL_IPV4" ]] && LOCAL_IPV4=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
 }
 
 # ============================================================================
@@ -157,35 +150,17 @@ parse_ifupdown_config() {
     local config="$1"
     
     while IFS= read -r line; do
-        # 去除空格
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # 跳过空行和注释
         [[ -z "$line" || "$line" == \#* ]] && continue
         
-        # 解析
         case "$line" in
-            iface\ *)
-                TUNNEL_NAME=$(echo "$line" | awk '{print $2}')
-                ;;
-            address\ *)
-                HE_ADDRESS=$(echo "$line" | awk '{print $2}')
-                ;;
-            netmask\ *)
-                HE_NETMASK=$(echo "$line" | awk '{print $2}')
-                ;;
-            endpoint\ *)
-                HE_ENDPOINT=$(echo "$line" | awk '{print $2}')
-                ;;
-            local\ *)
-                HE_LOCAL=$(echo "$line" | awk '{print $2}')
-                ;;
-            ttl\ *)
-                TUNNEL_TTL=$(echo "$line" | awk '{print $2}')
-                ;;
-            gateway\ *)
-                HE_GATEWAY=$(echo "$line" | awk '{print $2}')
-                ;;
+            iface\ *)      TUNNEL_NAME=$(echo "$line" | awk '{print $2}') ;;
+            address\ *)    HE_ADDRESS=$(echo "$line" | awk '{print $2}') ;;
+            netmask\ *)    HE_NETMASK=$(echo "$line" | awk '{print $2}') ;;
+            endpoint\ *)   HE_ENDPOINT=$(echo "$line" | awk '{print $2}') ;;
+            local\ *)      HE_LOCAL=$(echo "$line" | awk '{print $2}') ;;
+            ttl\ *)        TUNNEL_TTL=$(echo "$line" | awk '{print $2}') ;;
+            gateway\ *)    HE_GATEWAY=$(echo "$line" | awk '{print $2}') ;;
         esac
     done <<< "$config"
 }
@@ -241,11 +216,7 @@ input_config() {
             ;;
     esac
     
-    # 如果没有设置本地 IP，自动检测
-    if [[ -z "$HE_LOCAL" ]]; then
-        detect_local_ipv4
-        HE_LOCAL="$LOCAL_IPV4"
-    fi
+    [[ -z "$HE_LOCAL" ]] && { detect_local_ipv4; HE_LOCAL="$LOCAL_IPV4"; }
 }
 
 validate_config() {
@@ -260,7 +231,6 @@ validate_config() {
     
     [[ "$valid" != "true" ]] && exit 1
     
-    # 显示配置
     echo ""
     echo "=========================================="
     echo -e "${BLUE}配置摘要${NC}"
@@ -276,6 +246,7 @@ validate_config() {
         echo ""
         echo -e "${YELLOW}双栈模式配置:${NC}"
         echo "  原生 IPv6:    $NATIVE_IPV6 ($NATIVE_IPV6_IFACE)"
+        echo "  原生网关:     $NATIVE_IPV6_GW"
         echo "  原生 metric:  $NATIVE_METRIC"
         echo "  HE metric:    $HE_METRIC"
         echo "  策略路由:     启用"
@@ -291,19 +262,16 @@ validate_config() {
 cleanup_old() {
     log_step "清理旧配置..."
     
-    # 停止旧服务
     if systemctl is-active --quiet "${TUNNEL_NAME}.service" 2>/dev/null; then
         systemctl stop "${TUNNEL_NAME}.service"
         log_info "已停止旧服务"
     fi
     
-    # 删除旧隧道
     if ip link show "$TUNNEL_NAME" &>/dev/null; then
         ip tunnel del "$TUNNEL_NAME" 2>/dev/null || true
         log_info "已删除旧隧道"
     fi
     
-    # 备份旧文件
     local ts
     ts=$(date +%Y%m%d-%H%M%S)
     
@@ -346,7 +314,7 @@ EOF
 }
 
 generate_network() {
-    log_step "生成网络配置..."
+    log_step "生成 HE 隧道网络配置..."
     
     local network_file="/etc/systemd/network/50-${TUNNEL_NAME}.network"
     
@@ -366,11 +334,10 @@ Gateway=$HE_GATEWAY
 Metric=$HE_METRIC
 EOF
     
-    # 如果有原生 IPv6，添加策略路由
     if [[ -n "$NATIVE_IPV6" ]]; then
         cat >> "$network_file" << EOF
 
-# 策略路由：从 HE 地址出去的流量走 HE 隧道
+# 策略路由：从 HE 地址发出的流量走 HE 隧道
 [RoutingPolicyRule]
 From=${HE_ADDRESS}
 Table=$RT_TABLE_HE
@@ -385,8 +352,16 @@ EOF
     log_info "生成: $network_file"
 }
 
+# ============================================================================
+# 更新原生 IPv6 配置（重点修复）
+# ============================================================================
+
 update_native_metric() {
     [[ -z "$NATIVE_IPV6_IFACE" ]] && return
+    [[ -z "$NATIVE_IPV6_GW" ]] && {
+        log_warn "无法获取原生 IPv6 网关，跳过 metric 配置"
+        return
+    }
     
     log_step "更新原生 IPv6 metric..."
     
@@ -405,24 +380,87 @@ update_native_metric() {
         return
     fi
     
-    # 获取原生网关
-    local native_gw
-    native_gw=$(ip -6 route show default dev "$NATIVE_IPV6_IFACE" 2>/dev/null | awk '{print $3}' | head -1)
+    log_info "更新配置文件: $native_config"
     
-    if [[ -n "$native_gw" ]] && ! grep -q "^Metric=${NATIVE_METRIC}$" "$native_config"; then
-        # 备份
-        cp "$native_config" "${native_config}.bak"
+    # 备份
+    cp "$native_config" "${native_config}.bak.$(date +%Y%m%d-%H%M%S)"
+    
+    # 读取原配置
+    local temp_file="/tmp/network_config_temp.$$"
+    local in_ipv6_route=false
+    local ipv6_route_updated=false
+    local skip_next_route=false
+    
+    > "$temp_file"
+    
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # 检查是否是 [Route] 段
+        if [[ "$line" == "[Route]" ]]; then
+            # 先看下一行是否是 IPv6 网关
+            in_ipv6_route=false
+            echo "$line" >> "$temp_file"
+            continue
+        fi
         
-        # 添加 metric
-        cat >> "$native_config" << EOF
-
-# Native IPv6 metric (by HE script)
-[Route]
-Gateway=$native_gw
-Metric=$NATIVE_METRIC
-EOF
-        log_info "已设置原生 IPv6 metric: $NATIVE_METRIC"
-    fi
+        # 检查是否是 IPv6 网关行
+        if [[ "$line" =~ ^Gateway=.*:.* ]] || [[ "$line" == "Gateway=$NATIVE_IPV6_GW" ]]; then
+            in_ipv6_route=true
+        fi
+        
+        # 如果在 IPv6 路由段，检查并添加/更新 Metric
+        if [[ "$in_ipv6_route" == "true" ]]; then
+            # 跳过旧的 Metric 行
+            if [[ "$line" =~ ^Metric= ]]; then
+                continue
+            fi
+            
+            # 在 GatewayOnLink 后面或路由段结束前添加 Metric
+            if [[ "$line" =~ ^GatewayOnLink= ]]; then
+                echo "$line" >> "$temp_file"
+                echo "Metric=$NATIVE_METRIC" >> "$temp_file"
+                ipv6_route_updated=true
+                in_ipv6_route=false
+                continue
+            fi
+            
+            # 如果遇到新段落或空行，在之前插入 Metric
+            if [[ "$line" =~ ^\[.*\]$ ]] || [[ -z "$line" ]]; then
+                if [[ "$ipv6_route_updated" != "true" ]]; then
+                    echo "Metric=$NATIVE_METRIC" >> "$temp_file"
+                    ipv6_route_updated=true
+                fi
+                in_ipv6_route=false
+            fi
+        fi
+        
+        # 跳过脚本之前添加的重复路由段
+        if [[ "$line" == "# Native IPv6 metric (by HE script)" ]]; then
+            skip_next_route=true
+            continue
+        fi
+        
+        if [[ "$skip_next_route" == "true" ]]; then
+            if [[ "$line" =~ ^\[.*\]$ ]] && [[ "$line" != "[Route]" ]]; then
+                skip_next_route=false
+            elif [[ "$line" == "[Route]" ]]; then
+                # 跳过整个 Route 段
+                continue
+            elif [[ -z "$line" ]]; then
+                skip_next_route=false
+                continue
+            else
+                continue
+            fi
+        fi
+        
+        echo "$line" >> "$temp_file"
+        
+    done < "$native_config"
+    
+    # 替换原文件
+    mv "$temp_file" "$native_config"
+    
+    log_info "已更新原生 IPv6 路由 metric: $NATIVE_METRIC"
 }
 
 generate_remove_script() {
@@ -458,14 +496,11 @@ EOF
 apply_config() {
     log_step "应用配置..."
     
-    # 重载 systemd
     systemctl daemon-reload
     
-    # 启用并启动隧道服务
     systemctl enable "${TUNNEL_NAME}.service"
     systemctl start "${TUNNEL_NAME}.service"
     
-    # 等待隧道创建
     sleep 2
     
     if ! ip link show "$TUNNEL_NAME" &>/dev/null; then
@@ -476,9 +511,8 @@ apply_config() {
     
     log_info "隧道已创建"
     
-    # 重启 networkd 应用地址和路由
     systemctl restart systemd-networkd
-    sleep 2
+    sleep 3
     
     log_info "配置已应用"
 }
@@ -500,9 +534,9 @@ verify_tunnel() {
     
     echo ""
     echo "=========================================="
-    echo "IPv6 路由:"
+    echo "IPv6 默认路由:"
     echo "=========================================="
-    ip -6 route show | grep -E "(default|${TUNNEL_NAME})" | head -5
+    ip -6 route show default
     
     if [[ -n "$NATIVE_IPV6" ]]; then
         echo ""
@@ -524,7 +558,7 @@ verify_tunnel() {
         echo -e "${RED}失败 ✗${NC}"
     fi
     
-    echo -n "Ping 外网 (源 $HE_ADDRESS): "
+    echo -n "HE 出站 (源 $HE_ADDRESS): "
     if timeout 5 ping -6 -c 2 -I "$HE_ADDRESS" 2001:4860:4860::8888 &>/dev/null; then
         echo -e "${GREEN}成功 ✓${NC}"
     else
@@ -532,7 +566,7 @@ verify_tunnel() {
     fi
     
     if [[ -n "$NATIVE_IPV6" ]]; then
-        echo -n "Ping 外网 (源 $NATIVE_IPV6): "
+        echo -n "原生出站 (源 $NATIVE_IPV6): "
         if timeout 5 ping -6 -c 2 -I "$NATIVE_IPV6" 2001:4860:4860::8888 &>/dev/null; then
             echo -e "${GREEN}成功 ✓${NC}"
         else
@@ -561,9 +595,9 @@ show_result() {
     echo ""
     
     if [[ -n "$NATIVE_IPV6" ]]; then
-        echo -e "${YELLOW}注意: 双栈模式已配置${NC}"
-        echo "  - 默认出站使用原生 IPv6 (metric $NATIVE_METRIC)"
-        echo "  - HE 隧道作为备用 (metric $HE_METRIC)"
+        echo -e "${YELLOW}双栈模式说明:${NC}"
+        echo "  - 原生 IPv6 优先 (metric $NATIVE_METRIC)"
+        echo "  - HE 隧道备用 (metric $HE_METRIC)"
         echo "  - 从 HE 地址发起的连接会正确回包"
         echo ""
     fi
@@ -576,35 +610,27 @@ show_result() {
 main() {
     echo ""
     echo "=========================================="
-    echo "HE IPv6 Tunnel 配置脚本 v2.0"
+    echo "HE IPv6 Tunnel 配置脚本 v2.1"
     echo "=========================================="
     echo ""
     
-    # 基础检查
     check_root
     check_networkd
     
-    # 准备工作
     setup_sit_module
     setup_rt_tables
     
-    # 检测原生 IPv6
     detect_native_ipv6 || true
     
-    # 输入配置
     input_config
-    
-    # 验证配置
     validate_config
     
-    # 确认
     read -rp "是否继续配置? [y/N]: " confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
         log_info "已取消"
         exit 0
     fi
     
-    # 执行配置
     cleanup_old
     generate_service
     generate_network
@@ -615,5 +641,4 @@ main() {
     show_result
 }
 
-# 运行
 main "$@"
