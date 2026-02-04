@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ============================================================================
-# HE IPv6 Tunnel 一键配置脚本 for systemd-networkd
+# HE IPv6 Tunnel 一键配置脚本 for systemd-networkd v1.1
 # 支持与原生 IPv6 共存，自动配置 metric 和源地址策略路由
 # ============================================================================
 
@@ -44,6 +44,26 @@ check_networkd() {
     fi
 }
 
+# 确保 rt_tables 文件存在
+ensure_rt_tables() {
+    if [[ ! -f /etc/iproute2/rt_tables ]]; then
+        log_info "创建 /etc/iproute2/rt_tables..."
+        mkdir -p /etc/iproute2
+        cat > /etc/iproute2/rt_tables << 'EOF'
+#
+# reserved values
+#
+255	local
+254	main
+253	default
+0	unspec
+#
+# local
+#
+EOF
+    fi
+}
+
 # 检测原生 IPv6
 detect_native_ipv6() {
     log_step "检测原生 IPv6..."
@@ -51,29 +71,32 @@ detect_native_ipv6() {
     NATIVE_IPV6=""
     NATIVE_IPV6_IFACE=""
     
-    # 查找非隧道接口上的全局 IPv6 地址
-    while read -r line; do
-        local iface=$(echo "$line" | awk '{print $NF}')
-        local addr=$(echo "$line" | awk '{print $2}' | cut -d'/' -f1)
+    # 获取所有全局 IPv6 地址
+    while read -r addr iface; do
+        # 跳过空行
+        [[ -z "$addr" ]] && continue
         
-        # 跳过隧道接口和本地链路地址
-        if [[ "$iface" == "lo" ]] || [[ "$iface" =~ ^he ]] || [[ "$iface" =~ ^sit ]] || [[ "$iface" =~ ^tun ]]; then
-            continue
-        fi
-        if [[ "$addr" =~ ^fe80 ]] || [[ "$addr" =~ ^::1$ ]]; then
-            continue
-        fi
+        # 跳过隧道接口、loopback 和本地链路地址
+        [[ "$iface" == "lo" ]] && continue
+        [[ "$iface" =~ ^he ]] && continue
+        [[ "$iface" =~ ^sit ]] && continue
+        [[ "$iface" =~ ^tun ]] && continue
+        [[ "$iface" =~ ^ip6tnl ]] && continue
+        [[ "$addr" =~ ^fe80 ]] && continue
+        [[ "$addr" =~ ^::1$ ]] && continue
         
         NATIVE_IPV6="$addr"
         NATIVE_IPV6_IFACE="$iface"
         break
-    done < <(ip -6 addr show scope global 2>/dev/null | grep inet6)
+    done < <(ip -6 addr show scope global 2>/dev/null | awk '/inet6/ {gsub(/\/.*/, "", $2); print $2, $NF}')
     
-    if [[ -n "$NATIVE_IPV6" ]]; then
+    if [[ -n "$NATIVE_IPV6" ]] && [[ -n "$NATIVE_IPV6_IFACE" ]]; then
         log_info "检测到原生 IPv6: $NATIVE_IPV6 (接口: $NATIVE_IPV6_IFACE)"
         return 0
     else
         log_info "未检测到原生 IPv6"
+        NATIVE_IPV6=""
+        NATIVE_IPV6_IFACE=""
         return 1
     fi
 }
@@ -341,6 +364,7 @@ update_native_metric() {
     # 查找原生接口的配置文件
     local native_config=""
     for f in /etc/systemd/network/*.network; do
+        [[ ! -f "$f" ]] && continue
         if grep -q "Name=$NATIVE_IPV6_IFACE" "$f" 2>/dev/null; then
             native_config="$f"
             break
@@ -348,7 +372,7 @@ update_native_metric() {
     done
     
     if [[ -z "$native_config" ]]; then
-        log_warn "未找到接口 $NATIVE_IPV6_IFACE 的配置文件"
+        log_warn "未找到接口 $NATIVE_IPV6_IFACE 的配置文件，跳过 metric 配置"
         return
     fi
     
@@ -357,22 +381,12 @@ update_native_metric() {
     # 备份
     cp "$native_config" "${native_config}.bak.$(date +%Y%m%d-%H%M%S)"
     
-    # 检查是否已有 IPv6 路由配置
-    if grep -q "^\[Route\]" "$native_config" && grep -A5 "^\[Route\]" "$native_config" | grep -q "Gateway=.*:"; then
-        # 已有 IPv6 路由，检查是否有 metric
-        if ! grep -A10 "^\[Route\]" "$native_config" | grep -q "^Metric="; then
-            # 添加 metric 到现有的 IPv6 路由段
-            # 这比较复杂，我们采用追加新路由段的方式
-            :
-        fi
-    fi
-    
     # 获取原生 IPv6 网关
-    local native_gw=$(ip -6 route show default dev "$NATIVE_IPV6_IFACE" 2>/dev/null | grep -oP 'via \K[^ ]+' | head -1)
+    local native_gw=$(ip -6 route show default dev "$NATIVE_IPV6_IFACE" 2>/dev/null | awk '/via/ {print $3}' | head -1)
     
     if [[ -n "$native_gw" ]]; then
-        # 检查是否已经配置过
-        if grep -q "Metric=$NATIVE_METRIC" "$native_config" 2>/dev/null; then
+        # 检查是否已经配置过 metric
+        if grep -q "^Metric=$NATIVE_METRIC" "$native_config" 2>/dev/null; then
             log_info "原生 IPv6 metric 已配置"
             return
         fi
@@ -385,7 +399,7 @@ update_native_metric() {
 Gateway=$native_gw
 Metric=$NATIVE_METRIC
 EOF
-        log_info "已添加原生 IPv6 路由 metric: $NATIVE_METRIC"
+        log_info "已添加原生 IPv6 路由 metric: $NATIVE_METRIC (网关: $native_gw)"
     else
         log_warn "无法获取原生 IPv6 网关，跳过 metric 配置"
     fi
@@ -398,6 +412,9 @@ setup_rt_table() {
     fi
     
     log_step "配置路由表..."
+    
+    # 确保 rt_tables 文件存在
+    ensure_rt_tables
     
     # 添加路由表到 rt_tables
     if ! grep -q "^$RT_TABLE_HE[[:space:]]" /etc/iproute2/rt_tables 2>/dev/null; then
@@ -535,28 +552,28 @@ verify_tunnel() {
 generate_remove_script() {
     log_step "生成删除脚本..."
     
-    cat > /root/remove-he-ipv6.sh << 'REMOVE_EOF'
+    cat > /root/remove-he-ipv6.sh << REMOVE_EOF
 #!/bin/bash
 # 删除 HE IPv6 隧道配置
 
-TUNNEL_NAME="TUNNEL_NAME_PLACEHOLDER"
+TUNNEL_NAME="$TUNNEL_NAME"
 
 echo "删除 HE IPv6 隧道配置..."
 
+# 停止隧道
+ip link set "\$TUNNEL_NAME" down 2>/dev/null || true
+ip tunnel del "\$TUNNEL_NAME" 2>/dev/null || true
+
 # 删除配置文件
-rm -f "/etc/systemd/network/50-${TUNNEL_NAME}.netdev"
-rm -f "/etc/systemd/network/50-${TUNNEL_NAME}.network"
+rm -f "/etc/systemd/network/50-\${TUNNEL_NAME}.netdev"
+rm -f "/etc/systemd/network/50-\${TUNNEL_NAME}.network"
 
 # 重新加载
 networkctl reload 2>/dev/null || systemctl restart systemd-networkd
 
-# 删除路由表条目（可选）
-# sed -i '/he_tunnel/d' /etc/iproute2/rt_tables
-
 echo "删除完成！"
 REMOVE_EOF
 
-    sed -i "s/TUNNEL_NAME_PLACEHOLDER/$TUNNEL_NAME/g" /root/remove-he-ipv6.sh
     chmod +x /root/remove-he-ipv6.sh
     
     log_info "删除脚本: /root/remove-he-ipv6.sh"
@@ -593,12 +610,13 @@ show_final_status() {
 main() {
     echo ""
     echo "=========================================="
-    echo "HE IPv6 Tunnel 配置脚本 for systemd-networkd"
+    echo "HE IPv6 Tunnel 配置脚本 v1.1"
     echo "=========================================="
     echo ""
     
     check_root
     check_networkd
+    ensure_rt_tables
     
     # 检测原生 IPv6
     detect_native_ipv6 || true
